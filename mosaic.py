@@ -1,66 +1,106 @@
 import sys
 import cv2
+import logging
+import os
 import numpy as np
 from matplotlib import pyplot as plt
+
+#每个图像块的宽度
 BLOCK_WIDTH = 72
+#每个图像块的高度
 BLOCK_HEIGHT = 48
-STRIDE = 8
+#色彩的级数
 COLOR_SAMPLE_RATE = 32
+#默认最大值
 MAX_VALUE = 1e9
-
-#定义Block类用作记录对全图的替换
-class Block:
-	def __init__(self):
-		self._width = BLOCK_WIDTH
-		self._height = BLOCK_HEIGHT
-		self._x = -1
-		self._y = -1
-		self._url = None
-		self._pixels = np.zeros((self.height, self.width, 3), dtype=int)
-		self._hists = []
-
+#颜色相似度的权值
+COLOR_WEIGHT = 0.8
+#纹理相似度的权值
+TEXTURE_WEIGHT = 0.2
 #创建做区域直方图均衡的算子
 clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
 
-#读取图像并做预处理
-def preprocess(url):
-	image = cv2.imread(url)
-	resized_image = cv2.resize(image, (BLOCK_WIDTH, BLOCK_HEIGHT), interpolation = cv2.INTER_CUBIC)
-	hist_equalized_image = clahe.apply(resized_image)
-	#layer1用来计算纹理特征
-	downsampled_image_layer1 = cv2.pyrDown(hist_equalized_image)
-	#layer2用来计算颜色特征
-	downsampled_image_layer2 = cv2.pyrDown(downsampled_image_layer1)
-	return downsampled_image_layer2
+#得到LBP编码表，采用LBP等价模式：对跳变不超过2的编码单独计数，超过2的归为一类，记为"default"
+def get_lbp_codebook():
+	lbp_codes = []
+	for i in range(2**8):
+		code = bin(i)[2:]
+		if len(code) < 8:
+			code = "0" * (8-len(code)) + code
+		jump = 0
+		state = "-1"
+		for k in range(len(code)):
+			if code[k] != state and state != "-1":
+				jump += 1
+			state = code[k]
+		if jump <= 2:
+			lbp_codes.append(code)
+	
+	global lbp_codes_dict
+	lbp_codes_dict = dict()
+	for i in range(len(lbp_codes)):
+		lbp_codes_dict[lbp_codes[i]] = i
+	lbp_codes_dict["default"] = len(lbp_codes)
+	
+	global lbp_codes_length
+	lbp_codes_length = len(lbp_codes_dict)
+
+
+#定义Block类，用作记录图像块的特征
+class Block:
+	def __init__(self，url, width, height):
+		self._width = width
+		self._height = height
+		self._pixels = np.zeros((self.height, self.width, 3), dtype=int)
+		self._color_hists = []
+		self._texture_hists = []
+		self._index = -1
+
+	#预处理，计算直方图
+	def preprocess(self):
+		#layer1用来计算纹理特征
+		downsampled_image_layer1 = cv2.pyrDown(self._pixels)
+		self._texture_hists = calc_texture_hist(downsampled_image_layer1)
+		#layer2用来计算颜色特征
+		downsampled_image_layer2 = cv2.pyrDown(downsampled_image_layer1)
+		self._color_hists = calc_color_hist(downsampled_image_layer2)
+
+	def get_index(self, index):
+		self._index = index
+
+
+#定义Candidate子类，用作记录候选图的信息
+class Candidate(Block):
+	def __init__(self, url, width, height):
+		super(Candidate, self).__init__(width, height)
+		self._url = url
+		self._coordinate_lists = []
+		image = cv2.imread(self._url)
+		resized_image = cv2.resize(image, (self._width, self._height), interpolation = cv2.INTER_CUBIC)
+		self._pixels = hist_equalized_image = clahe.apply(resized_image)
+		super(Candidate, self).preprocess()
+
+
+#定义SubImage子类，用作记录子图的信息
+class SubImage(Block):
+	def __init__(self, image, x, y, width, height):
+		super(SubImage, self).__init__(width, height)
+		self._x = x
+		self._y = y
+		self._block_index = -1
+		self._pixels = image[x:x+width,y:y+height,:]
+		super(SubImage, self).preprocess()		 
+
 
 #计算颜色直方图，返回各个通道的直方图
-def calc_color_hist(block):
-	height, width, channel = block.shape
+def calc_color_hist(image):
+	height, width, channel = image.shape
 	hists = []
 	for k in range(channel):
-		hist, bins = np.histogram(img[:,:,k].flatten(), COLOR_SAMPLE_RATE, [0, 256])
+		hist, bins = np.histogram(image[:,:,k].flatten(), COLOR_SAMPLE_RATE, [0, 256])
 		hists.append(hist)
 	return hists
 
-#得到LBP编码表，采用LBP等价模式：对跳变不超过2的编码单独计数，超过2的归为一类，记为"default"
-lbp_codes = []
-for i in range(2**8):
-	code = bin(i)[2:]
-	if len(code) < 8:
-		code = "0" * (8-len(code)) + code
-	jump = 0
-	state = "-1"
-	for k in range(len(code)):
-		if code[k] != state and state != "-1":
-			jump += 1
-		state = code[k]
-	if jump <= 2:
-		lbp_codes.append(code)
-lbp_codes_dict = {}
-for i in range(len(lbp_codes)):
-	lbp_codes_dict[lbp_codes[i]] = i
-lbp_codes_dict["default"] = len(lbp_codes)
-lbp_codes_length = len(lbp_codes_dict)
 
 #计算单个通道的LBP特征，按编码表返回纹理直方图
 def calc_lbp(mat):
@@ -84,17 +124,19 @@ def calc_lbp(mat):
 				hist[lbp_codes_dict["default"]] += 1
 	return hist
 
+
 #计算纹理直方图，返回各个通道的直方图
-def calc_texture_hist(block):
-	height, width, channel = block.shape
+def calc_texture_hist(image):
+	height, width, channel = image.shape
 	hists = []
 	for k in range(channel):
-		hist = calc_lbp(block[:,:,k])
+		hist = calc_lbp(image[:,:,k])
 		hists.append(hist)
 	return hists
 
+
 #计算两个直方图的相似度
-def calc_similarity(hists1, hists2):
+def calc_hist_similarity(hists1, hists2):
 	if len(hists1) != len(hists2):
 		return MAX_VALUE
 	num_channels = len(hists1)
@@ -114,12 +156,61 @@ def calc_similarity(hists1, hists2):
 	similarity /= num_channels
 	return similarity
 
+
+#计算两个Block的相似度
+def calc_similarity(block1, block2):
+	similarity = 0
+	similarity += calc_hist_similarity(block1._color_hists, block2._color_hists) * COLOR_WEIGHT
+	similarity += calc_hist_similarity(block1._texture_hists, block2._texture_hists) * TEXTURE_WEIGHT
+	return similarity
+
+
 def main():
-	#TODO
+	#加载LBP编码表
+	get_lbp_codebook()
+	
+	#获取候选图片集合
+	candidate_path = "./"
+	candidate_files = os.listdir(candidate_path)
+	candidates = []
+	for file in candidate_files:
+		candidate = Candidate(file, BLOCK_WIDTH, BLOCK_HEIGHT)
+		candidates.append(candidate)
+	
+	#确定目标图的尺寸
+	target_height = 2400
+	target_width = 3600
+	if target_height % BLOCK_HEIGHT != 0 or target_width % BLOCK_WIDTH != 0:
+		logging.warn("Size of the target image is not acceptable, " + \
+			"target_width:%d, target_height:%d, block_width:%d, block_height:%d" \
+			% (target_width, target_height, BLOCK_WIDTH, BLOCK_HEIGHT))
+		return -1
+	
+	#加载目标图原图，并做预处理
+	target_image_path = "ptest.png"
+	image = cv2.imread(target_image_path)
+	hist_equalized_image = clahe.apply(image)
+	resized_image = cv2.resize(hist_equalized_image, (width, height), interpolation = cv2.INTER_CUBIC)
+	
+	#获取子图集合
+	num_in_vertical = height / BLOCK_HEIGHT
+	num_in_horizontal = width / BLOCK_WIDTH
+	sub_images = []
+	for i in range(num_in_vertical):
+		for j in range(num_in_horizontal):
+			sub_image = SubImage(image, j*BLOCK_WIDTH, i*BLOCK_HEIGHT, BLOCK_WIDTH, BLOCK_HEIGHT)
+			sub_images.append(sub_image)
+
+	#计算子图与候选图的相似度
+	similarity = np.zeros((len(sub_images), len(candidates)), dtype=float)
+	for i in range(len(sub_images)):
+		sub_images[i].get_index(i)
+		for j in range(len(candidates)):
+			candidates[i].get_index(j)
+			similarity[i,j] = calc_similarity(sub_images[i], candidates[j])
+
+	#TODO: choose
+
 	
 if __name__ == '__main__':
-	filename = "ptest.png"
-	img = cv2.imread(filename)
-	print img.shape
-	height = 2400
-	width = 3600
+	main()
