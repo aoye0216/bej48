@@ -17,6 +17,8 @@ MAX_VALUE = 1e9
 COLOR_WEIGHT = 0.8
 #纹理相似度的权值
 TEXTURE_WEIGHT = 0.2
+#相似度裕量
+SIMILARITY_MARGIN = 0.001
 #创建做区域直方图均衡的算子
 clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
 
@@ -48,48 +50,73 @@ def get_lbp_codebook():
 
 #定义Block类，用作记录图像块的特征
 class Block:
-	def __init__(self，url, width, height):
-		self._width = width
-		self._height = height
-		self._pixels = np.zeros((self.height, self.width, 3), dtype=int)
-		self._color_hists = []
-		self._texture_hists = []
-		self._index = -1
+	def __init__(self, _width, _height):
+		self.width = _width
+		self.height = _height
+		self.pixels = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+		self.color_hists = []
+		self.texture_hists = []
+		self.index = -1
 
 	#预处理，计算直方图
-	def preprocess(self):
+	def get_hists(self):
 		#layer1用来计算纹理特征
-		downsampled_image_layer1 = cv2.pyrDown(self._pixels)
-		self._texture_hists = calc_texture_hist(downsampled_image_layer1)
+		downsampled_image_layer1 = pryDown_color_image(self.pixels)
+		self.texture_hists = calc_texture_hist(downsampled_image_layer1)
 		#layer2用来计算颜色特征
-		downsampled_image_layer2 = cv2.pyrDown(downsampled_image_layer1)
-		self._color_hists = calc_color_hist(downsampled_image_layer2)
+		downsampled_image_layer2 = pryDown_color_image(downsampled_image_layer1)
+		self.color_hists = calc_color_hist(downsampled_image_layer2)
 
-	def get_index(self, index):
-		self._index = index
+	def get_index(self, _index):
+		self.index = _index
 
 
 #定义Candidate子类，用作记录候选图的信息
 class Candidate(Block):
-	def __init__(self, url, width, height):
-		super(Candidate, self).__init__(width, height)
-		self._url = url
-		self._coordinate_lists = []
-		image = cv2.imread(self._url)
-		resized_image = cv2.resize(image, (self._width, self._height), interpolation = cv2.INTER_CUBIC)
-		self._pixels = hist_equalized_image = clahe.apply(resized_image)
-		super(Candidate, self).preprocess()
+	def __init__(self, _url, _width, _height):
+		super(Candidate, self).__init__(_width, _height)
+		self.url = _url
+		self.coordinate_lists = []
+		image = cv2.imread(self.url)
+		resized_image = cv2.resize(image, (self.width, self.height), interpolation = cv2.INTER_CUBIC)
+		self.pixels = equalized_color_image(resized_image)
+		super(Candidate, self).get_hists()
 
 
 #定义SubImage子类，用作记录子图的信息
 class SubImage(Block):
-	def __init__(self, image, x, y, width, height):
-		super(SubImage, self).__init__(width, height)
-		self._x = x
-		self._y = y
-		self._block_index = -1
-		self._pixels = image[x:x+width,y:y+height,:]
-		super(SubImage, self).preprocess()		 
+	def __init__(self, _image, _x, _y, _width, _height):
+		super(SubImage, self).__init__(_width, _height)
+		self.x = _x
+		self.y = _y
+		self.block_index = -1
+		self.pixels = _image[_x:(_x + _width), _y:(_y + _height), :]
+		super(SubImage, self).get_hists()		 
+
+
+#改变色彩通道顺序
+def change_color_channels(image):
+	return image[:, :, (2, 1, 0)]
+
+
+#对彩色图像做直方图均衡：分离通道各自做直方图均衡
+def equalized_color_image(image):
+	res = np.zeros(image.shape, dtype=np.uint8)
+	for k in range(image.shape[-1]):
+		res[:, :, k] = clahe.apply(image[:, :, k])
+	return res
+
+
+#对彩色图像做降采样：分离通道各自做降采样
+def pryDown_color_image(image):
+	if len(image.shape) == 3:
+		shape = (int((image.shape[0] + 1) / 2), int((image.shape[1] + 1) / 2), image.shape[2])
+	else:
+		return cv2.pyrDown(image)
+	res = np.zeros(shape, dtype=np.uint8)
+	for k in range(image.shape[-1]):
+		res[:, :, k] = cv2.pyrDown(image[:, :, k].astype(np.uint8))
+	return res
 
 
 #计算颜色直方图，返回各个通道的直方图
@@ -113,6 +140,8 @@ def calc_lbp(mat):
 			code = ""
 			for k in [-1, 0, 1]:
 				for l in [-1, 0, 1]:
+					if k == 0 and l == 0:
+						continue
 					cur = 1 if mat[i+1,j+1] > mat[i+1+k,j+1+l] else 0
 					if state != cur and state != -1:
 						jump += 1
@@ -160,8 +189,8 @@ def calc_hist_similarity(hists1, hists2):
 #计算两个Block的相似度
 def calc_similarity(block1, block2):
 	similarity = 0
-	similarity += calc_hist_similarity(block1._color_hists, block2._color_hists) * COLOR_WEIGHT
-	similarity += calc_hist_similarity(block1._texture_hists, block2._texture_hists) * TEXTURE_WEIGHT
+	similarity += calc_hist_similarity(block1.color_hists, block2.color_hists) * COLOR_WEIGHT
+	similarity += calc_hist_similarity(block1.texture_hists, block2.texture_hists) * TEXTURE_WEIGHT
 	return similarity
 
 
@@ -170,16 +199,17 @@ def main():
 	get_lbp_codebook()
 	
 	#获取候选图片集合
-	candidate_path = "./"
+	candidate_path = "./data_all/"
 	candidate_files = os.listdir(candidate_path)
 	candidates = []
 	for file in candidate_files:
-		candidate = Candidate(file, BLOCK_WIDTH, BLOCK_HEIGHT)
-		candidates.append(candidate)
+		if os.path.splitext(file)[1] == ".jpg" or os.path.splitext(file)[1] == ".png":
+			candidate = Candidate(candidate_path + file, BLOCK_WIDTH, BLOCK_HEIGHT)
+			candidates.append(candidate)
 	
 	#确定目标图的尺寸
-	target_height = 2400
-	target_width = 3600
+	target_height = 480
+	target_width = 720
 	if target_height % BLOCK_HEIGHT != 0 or target_width % BLOCK_WIDTH != 0:
 		logging.warn("Size of the target image is not acceptable, " + \
 			"target_width:%d, target_height:%d, block_width:%d, block_height:%d" \
@@ -189,12 +219,12 @@ def main():
 	#加载目标图原图，并做预处理
 	target_image_path = "ptest.png"
 	image = cv2.imread(target_image_path)
-	hist_equalized_image = clahe.apply(image)
-	resized_image = cv2.resize(hist_equalized_image, (width, height), interpolation = cv2.INTER_CUBIC)
+	hist_equalized_image = equalized_color_image(image)
+	resized_image = cv2.resize(hist_equalized_image, (target_width, target_height), interpolation = cv2.INTER_CUBIC)
 	
 	#获取子图集合
-	num_in_vertical = height / BLOCK_HEIGHT
-	num_in_horizontal = width / BLOCK_WIDTH
+	num_in_vertical = int(target_height / BLOCK_HEIGHT)
+	num_in_horizontal = int(target_width / BLOCK_WIDTH)
 	sub_images = []
 	for i in range(num_in_vertical):
 		for j in range(num_in_horizontal):
@@ -206,11 +236,26 @@ def main():
 	for i in range(len(sub_images)):
 		sub_images[i].get_index(i)
 		for j in range(len(candidates)):
-			candidates[i].get_index(j)
-			similarity[i,j] = calc_similarity(sub_images[i], candidates[j])
+			candidates[j].get_index(j)
+			similarity[i, j] = calc_similarity(sub_images[i], candidates[j])
 
-	#TODO: choose
+	#计算与每个子图的相似度最高（similarity最小）的候选图
+	for i in range(len(sub_images)):
+		min_similarity = MAX_VALUE
+		min_index = -1
+		coordinate = (sub_images[i].x, sub_images[i].y)
+		for j in range(len(candidates)):
+			if abs(similarity[i, j] - min_similarity) < SIMILARITY_MARGIN:
+				if len(candidates[j].coordinate_lists) < len(candidates[min_index].coordinate_lists):
+					min_index = j
+				min_similarity = min(similarity[i, j], min_similarity)
+			elif similarity[i, j] < min_similarity:
+				min_index = j
+				min_similarity = similarity[i, j]
+		candidates[min_index].coordinate_lists.append(coordinate)
+		sub_images[i].block_index = min_index
 
+	#拼接
 	
 if __name__ == '__main__':
 	main()
