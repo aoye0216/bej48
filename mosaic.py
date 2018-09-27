@@ -90,7 +90,7 @@ class SubImage(Block):
 		self.x = _x
 		self.y = _y
 		self.block_index = -1
-		self.pixels = _image[_x:(_x + _width), _y:(_y + _height), :]
+		self.pixels = _image[_y:(_y + _height), _x:(_x + _width), :]
 		super(SubImage, self).get_hists()		 
 
 
@@ -220,7 +220,7 @@ def main():
 	target_image_path = "ptest.png"
 	image = cv2.imread(target_image_path)
 	hist_equalized_image = equalized_color_image(image)
-	resized_image = cv2.resize(hist_equalized_image, (target_width, target_height), interpolation = cv2.INTER_CUBIC)
+	target_image = resized_image = cv2.resize(hist_equalized_image, (target_width, target_height), interpolation = cv2.INTER_CUBIC)
 	
 	#获取子图集合
 	num_in_vertical = int(target_height / BLOCK_HEIGHT)
@@ -228,7 +228,7 @@ def main():
 	sub_images = []
 	for i in range(num_in_vertical):
 		for j in range(num_in_horizontal):
-			sub_image = SubImage(image, j*BLOCK_WIDTH, i*BLOCK_HEIGHT, BLOCK_WIDTH, BLOCK_HEIGHT)
+			sub_image = SubImage(target_image, j*BLOCK_WIDTH, i*BLOCK_HEIGHT, BLOCK_WIDTH, BLOCK_HEIGHT)
 			sub_images.append(sub_image)
 
 	#计算子图与候选图的相似度
@@ -256,6 +256,16 @@ def main():
 		sub_images[i].block_index = min_index
 
 	#拼接
+	mosaic_image = np.zeros(target_image.shape, dtype=np.uint8)
+	for i in range(len(sub_images)):
+		x = sub_images[i].x
+		y = sub_images[i].y
+		bi = sub_images[i].block_index
+		bw = sub_images[i].width
+		bh = sub_images[i].height
+		mosaic_image[y:y+bh, x:x+bw, :] = candidates[bi].pixels
+	plt.imshow(mosaic_image)
+	plt.show()
 	
 if __name__ == '__main__':
 	main()
