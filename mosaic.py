@@ -6,9 +6,9 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 #每个图像块的宽度
-BLOCK_WIDTH = 72
+BLOCK_WIDTH = 24
 #每个图像块的高度
-BLOCK_HEIGHT = 48
+BLOCK_HEIGHT = 24
 #色彩的级数
 COLOR_SAMPLE_RATE = 32
 #默认最大值
@@ -78,9 +78,13 @@ class Candidate(Block):
 		self.url = _url
 		self.coordinate_lists = []
 		image = cv2.imread(self.url)
-		resized_image = cv2.resize(image, (self.width, self.height), interpolation = cv2.INTER_CUBIC)
-		self.pixels = equalized_color_image(resized_image)
-		super(Candidate, self).get_hists()
+		if image is None:
+			self.pixels = None
+		else:
+			resized_image = cv2.resize(image, (self.width, self.height), interpolation = cv2.INTER_CUBIC)
+			#self.pixels = equalized_color_image(resized_image)
+			self.pixels = resized_image
+			super(Candidate, self).get_hists()
 
 
 #定义SubImage子类，用作记录子图的信息
@@ -205,7 +209,10 @@ def main():
 	for file in candidate_files:
 		if os.path.splitext(file)[1] == ".jpg" or os.path.splitext(file)[1] == ".png":
 			candidate = Candidate(candidate_path + file, BLOCK_WIDTH, BLOCK_HEIGHT)
-			candidates.append(candidate)
+			if candidate.pixels is None:
+				del candidate
+			else:
+				candidates.append(candidate)
 	
 	#确定目标图的尺寸
 	target_height = 480
@@ -219,9 +226,10 @@ def main():
 	#加载目标图原图，并做预处理
 	target_image_path = "ptest.png"
 	image = cv2.imread(target_image_path)
-	hist_equalized_image = equalized_color_image(image)
-	target_image = resized_image = cv2.resize(hist_equalized_image, (target_width, target_height), interpolation = cv2.INTER_CUBIC)
-	
+	#hist_equalized_image = equalized_color_image(image)
+	#target_image = resized_image = cv2.resize(hist_equalized_image, (target_width, target_height), interpolation = cv2.INTER_CUBIC)
+	target_image = resized_image = cv2.resize(image, (target_width, target_height), interpolation = cv2.INTER_CUBIC)
+
 	#获取子图集合
 	num_in_vertical = int(target_height / BLOCK_HEIGHT)
 	num_in_horizontal = int(target_width / BLOCK_WIDTH)
