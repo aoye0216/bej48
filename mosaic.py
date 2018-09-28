@@ -203,15 +203,13 @@ def main():
 	get_lbp_codebook()
 	
 	#获取候选图片集合
-	candidate_path = "./data_all/"
+	candidate_path = "./pics_origin/"
 	candidate_files = os.listdir(candidate_path)
 	candidates = []
 	for file in candidate_files:
 		if os.path.splitext(file)[1] == ".jpg" or os.path.splitext(file)[1] == ".png":
 			candidate = Candidate(candidate_path + file, BLOCK_WIDTH, BLOCK_HEIGHT)
-			if candidate.pixels is None:
-				del candidate
-			else:
+			if candidate.pixels is not None:
 				candidates.append(candidate)
 	
 	#确定目标图的尺寸
@@ -224,7 +222,7 @@ def main():
 		return -1
 	
 	#加载目标图原图，并做预处理
-	target_image_path = "ptest.png"
+	target_image_path = "b0.jpg"
 	image = cv2.imread(target_image_path)
 	#hist_equalized_image = equalized_color_image(image)
 	#target_image = resized_image = cv2.resize(hist_equalized_image, (target_width, target_height), interpolation = cv2.INTER_CUBIC)
@@ -247,21 +245,21 @@ def main():
 			candidates[j].get_index(j)
 			similarity[i, j] = calc_similarity(sub_images[i], candidates[j])
 
-	#计算与每个子图的相似度最高（similarity最小）的候选图
+	#计算与每个子图的相似度最高（similarity最大）的候选图
 	for i in range(len(sub_images)):
-		min_similarity = MAX_VALUE
-		min_index = -1
+		max_similarity = -1
+		max_index = -1
 		coordinate = (sub_images[i].x, sub_images[i].y)
 		for j in range(len(candidates)):
-			if abs(similarity[i, j] - min_similarity) < SIMILARITY_MARGIN:
-				if len(candidates[j].coordinate_lists) < len(candidates[min_index].coordinate_lists):
-					min_index = j
-				min_similarity = min(similarity[i, j], min_similarity)
-			elif similarity[i, j] < min_similarity:
-				min_index = j
-				min_similarity = similarity[i, j]
-		candidates[min_index].coordinate_lists.append(coordinate)
-		sub_images[i].block_index = min_index
+			if abs(similarity[i, j] - max_similarity) < SIMILARITY_MARGIN:
+				if len(candidates[j].coordinate_lists) > len(candidates[max_index].coordinate_lists):
+					max_index = j
+				max_similarity = max(similarity[i, j], max_similarity)
+			elif similarity[i, j] > max_similarity:
+				max_index = j
+				max_similarity = similarity[i, j]
+		candidates[max_index].coordinate_lists.append(coordinate)
+		sub_images[i].block_index = max_index
 
 	#拼接
 	mosaic_image = np.zeros(target_image.shape, dtype=np.uint8)
@@ -272,8 +270,9 @@ def main():
 		bw = sub_images[i].width
 		bh = sub_images[i].height
 		mosaic_image[y:y+bh, x:x+bw, :] = candidates[bi].pixels
-	plt.imshow(mosaic_image)
-	plt.show()
+	#plt.imshow(mosaic_image)
+	#plt.show()
+	cv2.imwrite("./res.jpg", mosaic_image)
 	
 if __name__ == '__main__':
 	main()
